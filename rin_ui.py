@@ -1,5 +1,6 @@
 import sys
 import subprocess
+import os
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
 from PyQt6.QtGui import *
@@ -7,46 +8,39 @@ from PyQt6.QtGui import *
 class RinEngineUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        # Internal state for memory tracking
         self.address_list = []
-        self.target_pid = None 
-
-        self.init_window_settings()
+        self.engine_path = "./rin-engine"
         self.init_ui()
 
-    def init_window_settings(self):
-        """Set up the main window aesthetic and geometry."""
-        self.setWindowTitle("RIN-ENGINE CONTROL PANEL v2.0")
+    def init_ui(self):
+        self.setWindowTitle("RIN-ENGINE CONTROL PANEL v3.0")
         self.setFixedSize(800, 600)
         self.setStyleSheet("background-color: #000000; color: #FFFFFF;")
 
-    def init_ui(self):
-        """Build the UI layout based on the user's conceptual design."""
         main_layout = QVBoxLayout()
         top_layout = QHBoxLayout()
         bottom_layout = QHBoxLayout()
 
-        # --- Top Section: Search & Location Controls ---
-        # Search functionality for value filtering
+        # Search Bar
         search_box = QHBoxLayout()
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Enter value to search...")
+        self.search_input.setPlaceholderText("Value to scan...")
         self.search_input.returnPressed.connect(self.run_search)
         search_box.addWidget(QLabel("🔍"))
         search_box.addWidget(self.search_input)
         
-        # PID input - Critical for targeting the correct process
+        # PID Input
         pid_box = QHBoxLayout()
         self.pid_input = QLineEdit()
-        self.pid_input.setPlaceholderText("Target PID...")
-        self.pid_input.setMaximumWidth(100)
+        self.pid_input.setPlaceholderText("PID...")
+        self.pid_input.setMaximumWidth(80)
         pid_box.addWidget(QLabel("PID:"))
         pid_box.addWidget(self.pid_input)
 
-        # Location input for direct memory access
+        # Location / Address Bar
         location_box = QHBoxLayout()
         self.location_input = QLineEdit()
-        self.location_input.setPlaceholderText("hex location...")
+        self.location_input.setPlaceholderText("Address...")
         location_btn = QPushButton("▲")
         location_btn.clicked.connect(self.read_at_location)
         location_box.addWidget(location_btn)
@@ -56,44 +50,38 @@ class RinEngineUI(QMainWindow):
         top_layout.addLayout(pid_box)
         top_layout.addLayout(location_box)
 
-        # --- Bottom Section: Results List & Memory Manipulation ---
-        # Left Panel: Display list of found memory addresses
+        # Result List (Left)
         self.result_list = QListWidget()
-        self.result_list.setStyleSheet("background-color: #888888; color: black; border: 2px solid white;")
+        self.result_list.setStyleSheet("background-color: #222222; color: #00FF00; border: 1px solid #555;")
         self.result_list.itemClicked.connect(self.select_address)
         bottom_layout.addWidget(self.result_list, 1)
 
-        # Right Panel: Read/Write controls
+        # Right Controls
         right_panel = QVBoxLayout()
-        
-        self.current_val_label = QLabel("Current Value")
-        self.current_val_label.setStyleSheet("background-color: #888888; padding: 20px; color: black;")
+        self.current_val_label = QLabel("VALUE")
+        self.current_val_label.setStyleSheet("background-color: #333333; padding: 20px; font-size: 18px;")
         self.current_val_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
-        arrow_label = QLabel("↓")
-        arrow_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
         self.dump_input = QLineEdit()
-        self.dump_input.setPlaceholderText("New value to dump...")
-        self.dump_input.setStyleSheet("background-color: #888888; color: black; padding: 10px;")
+        self.dump_input.setPlaceholderText("New value...")
+        self.dump_input.setStyleSheet("background-color: #333333; padding: 10px; border: none;")
         
-        self.dump_btn = QPushButton("dump")
+        self.dump_btn = QPushButton("DUMP")
         self.dump_btn.clicked.connect(self.run_dump)
+        self.dump_btn.setStyleSheet("background-color: #444; padding: 10px;")
         
-        self.reset_btn = QPushButton("Reset")
+        self.reset_btn = QPushButton("RESET")
         self.reset_btn.clicked.connect(self.reset_all)
-        self.reset_btn.setMinimumHeight(100)
+        self.reset_btn.setMinimumHeight(80)
 
         right_panel.addWidget(self.current_val_label)
-        right_panel.addWidget(arrow_label)
+        right_panel.addWidget(QLabel("↓", alignment=Qt.AlignmentFlag.AlignCenter))
         right_panel.addWidget(self.dump_input)
         right_panel.addWidget(self.dump_btn)
         right_panel.addStretch()
         right_panel.addWidget(self.reset_btn)
         
         bottom_layout.addLayout(right_panel, 1)
-
-        # Final layout assembly
         main_layout.addLayout(top_layout)
         main_layout.addLayout(bottom_layout)
         
@@ -101,66 +89,67 @@ class RinEngineUI(QMainWindow):
         container.setLayout(main_layout)
         self.setCentralWidget(container)
 
-    def run_search(self):
-        """Execute memory scan or filter existing results."""
-        val = self.search_input.text()
+    def call_engine(self, mode, target, val=""):
         pid = self.pid_input.text()
-        if not val or not pid: return
+        if not pid: return "ERR_NO_PID"
+        
+        cmd = [self.engine_path, mode, pid, target]
+        if val: cmd.append(val)
+        
+        try:
+            # Capture stdout and handle as string
+            res = subprocess.check_output(cmd).decode()
+            return res
+        except:
+            return "ERR_EXEC"
 
+    def run_search(self):
+        """Unified Scan & Filter Logic"""
+        val = self.search_input.text()
+        if not val: return
+
+        self.result_list.clear()
+        
         if not self.address_list:
-            # Initial scan logic (To be implemented with C++ scanner)
-            self.result_list.addItem(f"Starting scan for {val} in PID {pid}...")
-            # Mock data for simulation
-            self.address_list = ["0x7B123456", "0x7B1234F0", "0x7B1235A0"]
+            # FIRST SCAN: Search entire memory (Mode 's')
+            output = self.call_engine("s", val)
+            # Parse 'MATCH => 0x...' lines
+            matches = [line.split("=>")[-1].strip() for line in output.splitlines() if "MATCH" in line]
+            self.address_list = matches
+            for addr in self.address_list:
+                self.result_list.addItem(addr)
         else:
-            # Filtering mode: Re-read values of previously found addresses
-            self.result_list.clear()
+            # FILTER SCAN: Re-check existing addresses (Mode 'r')
             new_list = []
             for addr in self.address_list:
-                current_val = self.call_engine("r", addr)
-                if current_val == val:
+                res = self.call_engine("r", addr)
+                if "=>" in res and res.split("=>")[-1].strip() == val:
                     new_list.append(addr)
                     self.result_list.addItem(addr)
             self.address_list = new_list
 
     def read_at_location(self):
-        """Fetch and display value from a specific memory address."""
         addr = self.location_input.text()
         if addr:
-            val = self.call_engine("r", addr)
-            self.current_val_label.setText(f"Value: {val}")
+            res = self.call_engine("r", addr)
+            val = res.split("=>")[-1].strip() if "=>" in res else "Error"
+            self.current_val_label.setText(val)
 
     def run_dump(self):
-        """Inject new value into the targeted memory address."""
         addr = self.location_input.text()
         val = self.dump_input.text()
         if addr and val:
             self.call_engine("w", addr, val)
-            self.current_val_label.setText(f"Dumped: {val}")
+            self.current_val_label.setText(f"SET: {val}")
 
     def reset_all(self):
-        """Clear all session data and UI fields."""
         self.address_list = []
         self.result_list.clear()
         self.search_input.clear()
         self.location_input.clear()
-        self.current_val_label.setText("Engine Reset")
-
-    def call_engine(self, mode, addr, val=""):
-        """Interface between Python UI and C++ RIN-ENGINE."""
-        pid = self.pid_input.text()
-        cmd = ["./rin-engine", mode, pid, addr]
-        if val: cmd.append(val)
-        
-        try:
-            # Execute binary and capture standard output
-            result = subprocess.check_output(cmd).decode()
-            return result.split("=>")[-1].strip()
-        except Exception as e:
-            return f"Error: {str(e)}"
+        self.current_val_label.setText("RESET")
 
     def select_address(self, item):
-        """Auto-populate the location field when an item is selected."""
         self.location_input.setText(item.text())
 
 if __name__ == "__main__":

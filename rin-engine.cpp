@@ -1,9 +1,9 @@
 /*
  * Project: RIN-ENGINE
- * Version: 2.0 (Advanced)
+ * Version: 3.0 (Full Scanner Integration)
  * Author: asp1-rin
- * * Description: A high-performance memory manipulation engine 
- * designed for process analysis in Android environments.
+ * Description: Advanced memory engine with automated region scanning,
+ * read/write capabilities, and real-time monitoring.
  */
 
 #include <iostream>
@@ -12,79 +12,100 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 using namespace std;
 
-// Display the engine's identity and active modes
+// Structure to define memory segments from /proc/[PID]/maps
+struct MemoryRegion {
+    unsigned long long start;
+    unsigned long long end;
+};
+
 void print_header() {
     printf("==================================\n");
-    printf("     RIN-ENGINE v2.0 [ADVANCED]   \n");
-    printf("  Status: Operational / Mode-Ready \n");
+    printf("     RIN-ENGINE v3.0 [SCANNER]    \n");
+    printf("  Modes: Scan(s), Read(r), Write(w) \n");
     printf("==================================\n");
 }
 
-int main(int argc, char* argv[]) {
-    print_header();
+// Scans the entire memory space of a process for a specific value
+void scan_memory(int pid, int target_value) {
+    char map_path[64];
+    sprintf(map_path, "/proc/%d/maps", pid);
+    FILE* maps = fopen(map_path, "r");
+    if (!maps) {
+        printf("[-] Error: Unable to open process maps.\n");
+        return;
+    }
 
-    // Validate command-line arguments for proper execution
+    char mem_path[64];
+    sprintf(mem_path, "/proc/%d/mem", pid);
+    int fd = open(mem_path, O_RDONLY);
+    
+    char line[256];
+    while (fgets(line, sizeof(line), maps)) {
+        unsigned long long start, end;
+        char perms[5];
+        // Parse memory region boundaries and permissions
+        if (sscanf(line, "%llx-%llx %4s", &start, &end, perms) != 3) continue;
+
+        // Only scan readable regions to avoid segmentation faults or errors
+        if (perms[0] != 'r') continue;
+
+        unsigned long long size = end - start;
+        int* buffer = (int*)malloc(size);
+        if (!buffer) continue;
+
+        if (pread(fd, buffer, size, start) > 0) {
+            for (unsigned long long i = 0; i < size / sizeof(int); i++) {
+                if (buffer[i] == target_value) {
+                    // Output matches for the Python UI to capture
+                    printf("[+] MATCH => 0x%llX\n", start + (i * sizeof(int)));
+                }
+            }
+        }
+        free(buffer);
+    }
+    close(fd);
+    fclose(maps);
+}
+
+int main(int argc, char* argv[]) {
     if (argc < 4) {
-        printf("[Usage Guide]\n");
-        printf(" 1. Read    : ./rin-engine r [PID] [Addr]\n");
-        printf(" 2. Write   : ./rin-engine w [PID] [Addr] [Value]\n");
-        printf(" 3. Monitor : ./rin-engine m [PID] [Addr]\n");
+        print_header();
+        printf("[Usage]\n");
+        printf(" Scan  : ./rin-engine s [PID] [Value]\n");
+        printf(" Read  : ./rin-engine r [PID] [Addr]\n");
+        printf(" Write : ./rin-engine w [PID] [Addr] [Value]\n");
         return 1;
     }
 
-    // Initialize core parameters from input
     char mode = argv[1][0];
     int pid = atoi(argv[2]);
-    unsigned long long addr = strtoull(argv[3], NULL, 16);
     
-    char path[64];
-    sprintf(path, "/proc/%d/mem", pid);
-
-    // Establish link to target process memory with Read/Write access
-    int fd = open(path, O_RDWR);
-    if (fd == -1) {
-        printf("[-] Access Denied: Failed to open memory. Check root privileges.\n");
-        return 1;
-    }
-
-    // Mode 'r': Precise single-point memory extraction
-    if (mode == 'r') {
-        int value = 0;
-        pread(fd, &value, sizeof(value), addr);
-        printf("[+] [DATA] 0x%llX => %d\n", addr, value);
+    if (mode == 's') {
+        int target_val = atoi(argv[3]);
+        scan_memory(pid, target_val);
     } 
-    // Mode 'w': Real-time memory value injection
-    else if (mode == 'w') {
-        if (argc < 5) {
-            printf("[-] Parameter Error: Missing value for Write mode.\n");
-            return 1;
-        }
-        int newValue = atoi(argv[4]);
-        if (pwrite(fd, &newValue, sizeof(newValue), addr) != -1) {
-            printf("[+] [SYNC] Success: 0x%llX updated to %d\n", addr, newValue);
-        } else {
-            printf("[-] [ERR] Write operation failed at targeted address.\n");
-        }
-    }
-    // Mode 'm': Continuous state observation for value shifts
-    else if (mode == 'm') {
-        int lastValue = -1;
-        printf("[*] Monitoring link established at 0x%llX...\n", addr);
-        while (true) {
-            int currentValue = 0;
-            pread(fd, &currentValue, sizeof(currentValue), addr);
-            if (currentValue != lastValue) {
-                printf("[!] [EVENT] 0x%llX shifted: %d -> %d\n", addr, lastValue, currentValue);
-                lastValue = currentValue;
-            }
-            usleep(100000); // Polling interval: 100ms
-        }
-    }
+    else {
+        unsigned long long addr = strtoull(argv[3], NULL, 16);
+        char path[64];
+        sprintf(path, "/proc/%d/mem", pid);
+        int fd = open(path, O_RDWR);
+        if (fd == -1) return 1;
 
-    // Clean up resources before termination
-    close(fd);
+        if (mode == 'r') {
+            int value = 0;
+            pread(fd, &value, sizeof(value), addr);
+            printf("[+] [DATA] 0x%llX => %d\n", addr, value);
+        } 
+        else if (mode == 'w') {
+            int newValue = atoi(argv[4]);
+            pwrite(fd, &newValue, sizeof(newValue), addr);
+            printf("[+] [SYNC] Success => %d\n", newValue);
+        }
+        close(fd);
+    }
     return 0;
 }
