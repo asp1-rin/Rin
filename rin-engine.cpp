@@ -1,9 +1,7 @@
 /*
  * Project: RIN-ENGINE
- * Version: 3.0 (Full Scanner Integration)
+ * Version: 3.1 (Cross-Platform Compatibility)
  * Author: asp1-rin
- * Description: Advanced memory engine with automated region scanning,
- * read/write capabilities, and real-time monitoring.
  */
 
 #include <iostream>
@@ -16,7 +14,6 @@
 
 using namespace std;
 
-// Structure to define memory segments from /proc/[PID]/maps
 struct MemoryRegion {
     unsigned long long start;
     unsigned long long end;
@@ -24,12 +21,22 @@ struct MemoryRegion {
 
 void print_header() {
     printf("==================================\n");
-    printf("     RIN-ENGINE v3.0 [SCANNER]    \n");
-    printf("  Modes: Scan(s), Read(r), Write(w) \n");
+    printf("     RIN-ENGINE v3.1 [SCANNER]    \n");
     printf("==================================\n");
 }
 
-// Scans the entire memory space of a process for a specific value
+// Portable pread equivalent using lseek and read
+ssize_t portable_pread(int fd, void* buf, size_t count, off_t offset) {
+    if (lseek(fd, offset, SEEK_SET) == -1) return -1;
+    return read(fd, buf, count);
+}
+
+// Portable pwrite equivalent using lseek and write
+ssize_t portable_pwrite(int fd, const void* buf, size_t count, off_t offset) {
+    if (lseek(fd, offset, SEEK_SET) == -1) return -1;
+    return write(fd, buf, count);
+}
+
 void scan_memory(int pid, int target_value) {
     char map_path[64];
     sprintf(map_path, "/proc/%d/maps", pid);
@@ -42,25 +49,25 @@ void scan_memory(int pid, int target_value) {
     char mem_path[64];
     sprintf(mem_path, "/proc/%d/mem", pid);
     int fd = open(mem_path, O_RDONLY);
+    if (fd == -1) {
+        fclose(maps);
+        return;
+    }
     
     char line[256];
     while (fgets(line, sizeof(line), maps)) {
         unsigned long long start, end;
         char perms[5];
-        // Parse memory region boundaries and permissions
         if (sscanf(line, "%llx-%llx %4s", &start, &end, perms) != 3) continue;
-
-        // Only scan readable regions to avoid segmentation faults or errors
         if (perms[0] != 'r') continue;
 
         unsigned long long size = end - start;
         int* buffer = (int*)malloc(size);
         if (!buffer) continue;
 
-        if (pread(fd, buffer, size, start) > 0) {
+        if (portable_pread(fd, buffer, size, (off_t)start) > 0) {
             for (unsigned long long i = 0; i < size / sizeof(int); i++) {
                 if (buffer[i] == target_value) {
-                    // Output matches for the Python UI to capture
                     printf("[+] MATCH => 0x%llX\n", start + (i * sizeof(int)));
                 }
             }
@@ -74,10 +81,6 @@ void scan_memory(int pid, int target_value) {
 int main(int argc, char* argv[]) {
     if (argc < 4) {
         print_header();
-        printf("[Usage]\n");
-        printf(" Scan  : ./rin-engine s [PID] [Value]\n");
-        printf(" Read  : ./rin-engine r [PID] [Addr]\n");
-        printf(" Write : ./rin-engine w [PID] [Addr] [Value]\n");
         return 1;
     }
 
@@ -93,16 +96,20 @@ int main(int argc, char* argv[]) {
         char path[64];
         sprintf(path, "/proc/%d/mem", pid);
         int fd = open(path, O_RDWR);
-        if (fd == -1) return 1;
+        if (fd == -1) {
+            // Try Read-Only if RW fails
+            fd = open(path, O_RDONLY);
+            if (fd == -1) return 1;
+        }
 
         if (mode == 'r') {
             int value = 0;
-            pread(fd, &value, sizeof(value), addr);
+            portable_pread(fd, &value, sizeof(value), (off_t)addr);
             printf("[+] [DATA] 0x%llX => %d\n", addr, value);
         } 
         else if (mode == 'w') {
             int newValue = atoi(argv[4]);
-            pwrite(fd, &newValue, sizeof(newValue), addr);
+            portable_pwrite(fd, &newValue, sizeof(newValue), (off_t)addr);
             printf("[+] [SYNC] Success => %d\n", newValue);
         }
         close(fd);
